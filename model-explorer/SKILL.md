@@ -104,6 +104,9 @@ For the Domovoy pool: **Q4_K_M is the default.** For 27B+ models use IQ4_XS or I
 
 ## 3. Download models (curl, zero dependencies)
 
+> For a focused download-only workflow, use the `hf-model-download` skill instead.
+> It isolates the exact steps: find the filename, set the token, download, resume, troubleshoot.
+
 ### Set up authentication
 
 Hugging Face requires a token for gated models. Get yours at
