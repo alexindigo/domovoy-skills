@@ -52,8 +52,8 @@ ownership to that account.
 - **Home is the root.** In-home items are stored home-relative (`rel_path`). You
   reconstruct absolute paths under **`<target-home>`** — the destination account's
   home on THIS machine. Never use `source.home` as a real path here.
-- **Source identity ≠ target identity.** The source account (e.g. `alex` /
-  `/Users/alex`) may differ from the destination (e.g. `user` / `/home/user`).
+- **Source identity ≠ target identity.** The source account (e.g. `mac-user` /
+  `/Users/mac-user`) may differ from the destination (e.g. `user` / `/home/user`).
   You **resolve the destination account by asking the human** (Step 0) — never
   assume `user` or match the source.
 - **The bundle is inert payload.** You do not honor or rewrite absolute paths
@@ -217,7 +217,7 @@ source's `.zshrc` lands on a bash target (don't just append zsh syntax to bash).
 
 ### Inert-payload check (text files)
 When integrating a text file, you MAY scan it for embedded absolute paths that
-won't exist here (notably `source.home`, e.g. `/Users/alex`, and other machine
+won't exist here (notably `source.home`, e.g. `/Users/mac-user`, and other machine
 paths). Do NOT auto-rewrite. **Report** matches to the human with the file and
 line, and let them decide (edit, leave, skip):
 ```sh

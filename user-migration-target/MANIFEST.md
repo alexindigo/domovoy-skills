@@ -20,7 +20,7 @@ must refuse a `schema` it doesn't understand and ask the user.
    home. This makes usernames and home prefixes irrelevant for *placement*.
 
 2. **Source identity ≠ target identity.** The human account name/uid/home on the
-   source (e.g. `alex` / 501 / `/Users/alex` on macOS) may differ entirely from
+   source (e.g. `mac-user` / 501 / `/Users/mac-user` on macOS) may differ entirely from
    the target (e.g. `user` / 1000 / `/home/user`). The manifest records the
    **source** identity; the target resolves its **own** destination account
    (asking the human — never assuming `user` or matching the source).
@@ -28,7 +28,7 @@ must refuse a `schema` it doesn't understand and ask the user.
 3. **The bundle is inert payload.** The target does NOT honor, trust, or execute
    any absolute path found *inside* migrated files. It asks the human where
    payload goes, and for text files it may **examine contents and report** likely
-   issues (e.g. an internal `/Users/alex/...` reference that won't exist on the
+   issues (e.g. an internal `/Users/mac-user/...` reference that won't exist on the
    target) for the human to resolve. There is **NO automatic content rewriting.**
 
 4. **Accounts are scoped by the human.** Both source and target present the
@@ -43,8 +43,8 @@ must refuse a `schema` it doesn't understand and ask the user.
 
 ## Top-level structure
 
-Example uses a **macOS** source to make source≠target obvious (source user `alex`,
-home `/Users/alex`; a Linux target might integrate this as `user` / `/home/user`):
+Example uses a **macOS** source to make source≠target obvious (source user `mac-user`,
+home `/Users/mac-user`; a Linux target might integrate this as `user` / `/home/user`):
 
 ```json
 {
@@ -58,9 +58,9 @@ home `/Users/alex`; a Linux target might integrate this as `user` / `/home/user`
   "source": {
     "host": "macbook",
     "os": "darwin",
-    "account": "alex",
+    "account": "mac-user",
     "uid": 501,
-    "home": "/Users/alex",
+    "home": "/Users/mac-user",
     "shell": "/bin/zsh"
   },
   "generated": "2026-06-28T17:00:00-07:00",

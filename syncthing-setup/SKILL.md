@@ -24,7 +24,7 @@ fleet, and how to set it up on a new machine or the central home server.
 
 ```
    leaf: laptop  ─┐
-   leaf: ark     ─┼── sync CURRENT copy ──►  NAS / home server (hub)
+   leaf: <leaf>  ─┼── sync CURRENT copy ──►  NAS / home server (hub)
    leaf: ...     ─┘                           └─ File Versioning ON
                                                  (= back-history / backup)
 ```
