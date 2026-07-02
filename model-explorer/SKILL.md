@@ -102,41 +102,20 @@ For the Domovoy pool: **Q4_K_M is the default.** For 27B+ models use IQ4_XS or I
 
 ---
 
-## 3. Download models (curl, zero dependencies)
+## 3. Download models
 
-> For a focused download-only workflow, use the `hf-model-download` skill instead.
-> It isolates the exact steps: find the filename, set the token, download, resume, troubleshoot.
+**Delegate to the `hf-model-download` skill.** It is the single source of truth
+for download mechanics: finding the exact filename via HF API, setting the token,
+curl download + resume, and troubleshooting. Load it with the `skill` tool when
+the user is ready to download a known model.
 
-### Set up authentication
+Brief summary (repeated here only for context — `hf-model-download` is
+authoritative):
 
-Hugging Face requires a token for gated models. Get yours at
-`huggingface.co/settings/tokens`. Set it as an environment variable:
-
-```bash
-export HF_TOKEN="hf_..."        # ephemeral, never log or write to disk
-```
-
-Verify it works:
-```bash
-curl -sH "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/whoami
-```
-
-### Download a model
-
-```bash
-curl -fL --progress-bar \
-  -H "Authorization: Bearer $HF_TOKEN" \
-  -o ~/models/<filename>.gguf \
-  "https://huggingface.co/<user>/<repo>/resolve/main/<filename>.gguf"
-```
-
-- `-L` follows LFS redirects (Hugging Face stores large files on LFS).
-- `resolve/main/` is the canonical CDN path.
-- `-f` fails on HTTP errors (don't save a 404 error page as a .gguf file).
-
-The token lives only in the bash process's environment — it is never echoed,
-logged, or written to a file. Per the Domovoy safety rules, secrets never
-appear in maintenance reports, output, or logs.
+- Get the exact filename from the HF API — **do not guess from the model name.**
+- Set `HF_TOKEN` ephemerally, never logged.
+- `curl -fL -H "Authorization: Bearer $HF_TOKEN" -o ~/models/<file>.gguf <url>`
+- Restart llama-server: `systemctl --user restart llama-server.service`
 
 ---
 
