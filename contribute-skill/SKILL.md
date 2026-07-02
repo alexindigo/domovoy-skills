@@ -28,6 +28,48 @@ machine-specific skills that never go to the store.
 
 ---
 
+## Design principles
+
+### Delegate, don't duplicate
+
+When a skill covers a broad topic (e.g. model exploration), extract narrow
+reusable pieces into their own skills (e.g. model downloading). The broader
+skill **delegates** to the narrower one rather than repeating its content.
+
+```
+model-explorer  ──►  hf-model-download   (download mechanics, single source of truth)
+                 ──►  model-explorer     (discovery, budgeting, testing — only here)
+```
+
+The narrow skill is the **single source of truth** for its mechanics. If it
+improves (new curl flags, better error handling), every skill that delegates to
+it benefits — no edits needed. The delegating skill says "load skill X for the
+download step" and keeps only a one-line summary for context.
+
+When to extract:
+- You find yourself copy-pasting the same steps across multiple skills.
+- A piece is useful on its own (e.g. "just download a model" vs. "explore the HF
+  model landscape").
+- A piece might evolve independently (token handling, authentication flows).
+
+When to keep inline:
+- The steps are specific to the delegating skill's workflow (e.g. model-explorer's
+  VRAM budgeting is its own concern, not hf-model-download's).
+- The piece is trivial (2-3 lines) and extracting it adds more indirection than
+  value.
+
+### `metadata` records the relationship
+
+```yaml
+metadata:
+  related: hf-model-download
+```
+
+This is advisory — opencode's flat-skill discovery doesn't enforce hierarchy.
+But future tooling or contributors can trace the delegation graph.
+
+---
+
 ## Skill file structure
 
 Each skill is ONE directory with a `SKILL.md` (required) and optional scripts:
