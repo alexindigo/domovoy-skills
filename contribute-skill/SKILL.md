@@ -183,8 +183,8 @@ assert 1 <= len(d['description']) <= 1024
 
 ### 4. Copy to the store and commit
 ```bash
-cp -r ~/.agents/skills/<skill-name> ~/Projects/domovoy-skills/<skill-name>
-cd ~/Projects/domovoy-skills
+cp -r ~/.agents/skills/<skill-name> ~/Public/domovoy-skills/<skill-name>
+cd ~/Public/domovoy-skills
 git add <skill-name>/
 git commit -m "<descriptive message>"
 git push origin master
