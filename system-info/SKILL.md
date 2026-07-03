@@ -60,8 +60,16 @@ pacman -Q intel-compute-runtime 2>/dev/null  # key versions
 
 ### Networking
 ```bash
-ip -br link | grep -v LOOPBACK | awk '{print $1}'
+# active interfaces with IPs, subnets, and state
+ip -br addr | grep -v LOOPBACK | grep -v 'DOWN'
+# default gateway
+ip route | grep default
+# DNS search domain (the .home / .local suffix convention)
+grep -i '^search' /etc/resolv.conf 2>/dev/null || true
 ```
+Record the LAN subnet (CIDR) explicitly — this is used to auto-discover firewall
+scope for services that should be LAN-accessible. Also list known LAN services
+(SearXNG, Syncthing, etc.) so the agent knows the machine's network context.
 
 ## When to update
 
@@ -73,6 +81,8 @@ ip -br link | grep -v LOOPBACK | awk '{print $1}'
 | Hardware change | Hardware table |
 | Storage layout change | Storage section |
 | New network interface | Networking list |
+| IP/subnet/DNS change | Networking section |
+| New LAN service | Networking section |
 | Boot config change | Boot section, kernel parameters |
 
 ## What NOT to put here
@@ -109,7 +119,9 @@ ip -br link | grep -v LOOPBACK | awk '{print $1}'
 (compute runtime, drivers, notable AI/ML packages)
 
 ## Networking
-(interfaces, addressing)
+- `<iface>` (active): `<ip>/<cidr>` — wired/wireless, LAN subnet `<subnet>`, DNS suffix `<domain>`
+- Default gateway: `<ip>`
+- LAN services: SearXNG (`search.home:80`), Syncthing NAS (`storage`), etc.
 
 ## Users
 (human and service accounts)
