@@ -1,0 +1,544 @@
+#!/bin/bash
+set -euo pipefail
+
+# --- Constants ---
+readonly TMPDIR="${TMPDIR:-/tmp}"
+readonly HTML_FILE="$TMPDIR/captive-login.html"
+readonly MAX_RETRIES=3
+readonly TIMEOUT=10
+
+CANARIES=(
+  "http://detectportal.firefox.com/success.txt|200|success"
+  "http://captive.apple.com/hotspot-detect.html|200|success"
+  "http://ipv4.icanhazip.com|200|"
+  "http://neverssl.com|200|"
+)
+
+DEBUG=false
+[[ "${1:-}" == "--debug" ]] && DEBUG=true
+debug() { $DEBUG && echo "[debug] $*" >&2; }
+
+# --- Detection ---
+detect_portal() {
+  for entry in "${CANARIES[@]}"; do
+    local url="${entry%%|*}"
+    local rest="${entry#*|}"
+    local expected_status="${rest%%|*}"
+    local expected_body="${rest#*|}"
+
+    echo "  Checking $url ..." >&2
+
+    local code body
+    code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$TIMEOUT" "$url" 2>/dev/null || echo "000")
+    body=$(curl -sS --max-time "$TIMEOUT" "$url" 2>/dev/null || echo "")
+
+    if [[ "$code" == "000" ]]; then
+      debug "Connection failed (timeout/SSL error)"
+      continue
+    fi
+
+    if [[ "$code" == "$expected_status" ]]; then
+      if [[ -n "$expected_body" ]]; then
+        local norm_body
+        norm_body=$(echo "$body" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        if [[ "$norm_body" == *"$expected_body"* ]]; then
+          debug "Expected response, no portal"
+          echo "  ✓ $url → OK (no portal)" >&2
+          return 0
+        fi
+      else
+        debug "Got expected status, likely no portal"
+        echo "  ✓ $url → OK (no portal)" >&2
+        return 0
+      fi
+    fi
+
+    # Portal detected
+    local portal_url
+    portal_url=$(curl -sS -o /dev/null -w "%{url_effective}" --max-time "$TIMEOUT" -L "$url" 2>/dev/null || echo "")
+    if [[ -z "$portal_url" || "$portal_url" == "$url" ]]; then
+      portal_url="$url"
+    fi
+
+    echo "  ! $url → redirected to portal" >&2
+    echo "$portal_url"
+    return 0
+  done
+
+  echo ""
+  return 1
+}
+
+# --- Form parsing ---
+parse_form() {
+  local html_file="$1"
+  local html
+  html=$(cat "$html_file")
+
+  local form_action="" form_method="GET" page_title=""
+
+  # form action
+  local re='<form[[:space:]]+[^>]*action="([^"]+)"'
+  [[ "$html" =~ $re ]] && form_action="${BASH_REMATCH[1]}"
+
+  # form method
+  local re2='<form[[:space:]]+[^>]*method="([^"]+)"'
+  [[ "$html" =~ $re2 ]] && form_method="${BASH_REMATCH[1]^^}"
+
+  # page title
+  local re3='<title>([^<]+)</title>'
+  [[ "$html" =~ $re3 ]] && page_title="${BASH_REMATCH[1]}"
+
+  echo "action=$form_action"
+  echo "method=$form_method"
+  echo "title=$page_title"
+
+  # Input fields
+  local re4='name="([^"]+)"'
+  local re5='type="([^"]+)"'
+  local re6='value="([^"]*)"'
+  local re7='placeholder="([^"]+)"'
+
+  local input_tags
+  mapfile -t input_tags < <(echo "$html" | grep -oP '<input[^>]*>' || true)
+
+  for tag in "${input_tags[@]}"; do
+    local name="" itype="" value="" placeholder=""
+
+    [[ "$tag" =~ $re4 ]] && name="${BASH_REMATCH[1]}"
+    [[ "$tag" =~ $re5 ]] && itype="${BASH_REMATCH[1],,}" || itype="text"
+    [[ "$tag" =~ $re6 ]] && value="${BASH_REMATCH[1]}"
+    [[ "$tag" =~ $re7 ]] && placeholder="${BASH_REMATCH[1]}"
+
+    [[ -z "$name" ]] && continue
+    echo "field|$name|$itype|$value|$placeholder"
+  done
+
+  # Select fields
+  local select_blocks
+  mapfile -t select_blocks < <(echo "$html" | grep -oP '<select[^>]*>.*?</select>' || true)
+  local re8='name="([^"]+)"'
+  local re9='<option[^>]*value="([^"]+)"[^>]*>([^<]+)</option>'
+
+  for block in "${select_blocks[@]}"; do
+    local name="" options=()
+    [[ "$block" =~ $re8 ]] && name="${BASH_REMATCH[1]}"
+    [[ -z "$name" ]] && continue
+    local remaining="$block"
+    while [[ "$remaining" =~ $re9 ]]; do
+      options+=("${BASH_REMATCH[1]}|${BASH_REMATCH[2]}")
+      remaining="${remaining#*</option>}"
+    done
+    echo "select|$name|${options[*]}"
+  done
+
+  # Textareas
+  local textarea_blocks
+  mapfile -t textarea_blocks < <(echo "$html" | grep -oP '<textarea[^>]*>.*?</textarea>' || true)
+  local re10='name="([^"]+)"'
+  local re11='placeholder="([^"]+)"'
+
+  for block in "${textarea_blocks[@]}"; do
+    local name="" placeholder=""
+    [[ "$block" =~ $re10 ]] && name="${BASH_REMATCH[1]}"
+    [[ "$block" =~ $re11 ]] && placeholder="${BASH_REMATCH[1]}"
+    [[ -z "$name" ]] && continue
+    echo "textarea|$name|$placeholder"
+  done
+}
+
+# --- Label lookup ---
+get_label() {
+  local html_file="$1"
+  local field_name="$2"
+  local html
+  html=$(cat "$html_file")
+
+  local re='<label[[:space:]]+[^>]*for="'"$field_name"'"[^>]*>([^<]+)</label>'
+  if [[ "$html" =~ $re ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return
+  fi
+
+  # Surrounding text before input
+  local re2='([^<>]{1,60})[[:space:]]*<input[^>]*name="'"$field_name"'"'
+  if [[ "$html" =~ $re2 ]]; then
+    local ctx="${BASH_REMATCH[1]}"
+    ctx=$(echo "$ctx" | sed 's/<[^>]*>//g; s/^[[:space:]]*//; s/[[:space:]]*$//')
+    ctx="${ctx: -40}"
+    ctx=$(echo "$ctx" | sed 's/^[[:space:]]*//')
+    if [[ -n "$ctx" && "${#ctx}" -gt 2 ]]; then
+      echo "$ctx"
+      return
+    fi
+  fi
+
+  echo "$field_name"
+}
+
+# --- Generate fake email ---
+fake_email() {
+  local chars="abcdefghijklmnopqrstuvwxyz0123456789"
+  local str=""
+  for _ in {1..8}; do
+    str+="${chars:RANDOM%${#chars}:1}"
+  done
+  echo "guest.${str}@protonmail.com"
+}
+
+# --- Clean label text ---
+clean_label() {
+  local text="$1"
+  text=$(echo "$text" | sed 's/[[:space:]]*$//; s/[[:punct:]]*$//')
+  echo "$text"
+}
+
+# --- Append to values array (global) ---
+VALUES_ARRAY=()
+append_value() {
+  VALUES_ARRAY+=("$1=$2")
+}
+
+# --- Interactive field filling ---
+collect_values() {
+  local html_file="$1"
+  local form_action="$2"
+  shift 2
+  local fields=("$@")
+
+  local field_lines=()
+  local select_data=()
+  local textarea_data=()
+
+  for line in "${fields[@]}"; do
+    if [[ "$line" == field\|* ]]; then
+      field_lines+=("$line")
+    elif [[ "$line" == select\|* ]]; then
+      select_data+=("$line")
+    elif [[ "$line" == textarea\|* ]]; then
+      textarea_data+=("$line")
+    fi
+  done
+
+  echo "" >&2
+  echo "📝 Detected form fields:" >&2
+
+  for line in "${field_lines[@]}"; do
+    local name="" itype="" ivalue="" iplaceholder=""
+    IFS='|' read -r _ name itype ivalue iplaceholder <<< "$line"
+    local val=""
+
+    if [[ "$itype" == "hidden" ]]; then
+      val="$ivalue"
+      echo "  [hidden]    $name" >&2
+      append_value "$name" "$val"
+
+    elif [[ "$itype" =~ ^(submit|button|image)$ ]]; then
+      debug "Skipping submit button: $name"
+      continue
+
+    elif [[ "$itype" == "email" ]]; then
+      local label
+      label=$(get_label "$html_file" "$name")
+      label=$(clean_label "$label")
+      [[ -z "$label" || "$label" == "$name" ]] && label="${iplaceholder:-Email}"
+      read -e -r -p "  📧 $label (Enter for fake): " val
+      if [[ -z "$val" ]]; then
+        val=$(fake_email)
+        echo "         → using $val" >&2
+      fi
+      append_value "$name" "$val"
+
+    elif [[ "$itype" == "checkbox" ]]; then
+      local label
+      label=$(get_label "$html_file" "$name")
+      local lower_label="${label,,}"
+      local lower_name="${name,,}"
+
+      if echo "$lower_label $lower_name" | grep -qE '(subscribe|newsletter|offer|promotion|optional|mailing)'; then
+        debug "Unchecking subscribe/optional: $name"
+        echo "  ☐ $name → (auto-unchecked)" >&2
+        append_value "$name" "off"
+      elif echo "$lower_label $lower_name" | grep -qE '(accept|agree|terms|conditions|policy)'; then
+        debug "Auto-checking accept/agree: $name"
+        echo "  ☑ $name → (auto-accepted)" >&2
+        append_value "$name" "on"
+      else
+        local label_clean
+        label_clean=$(clean_label "$label")
+        [[ -z "$label_clean" || "$label_clean" == "$name" ]] && label_clean="${iplaceholder:-$name}"
+        read -e -r -p "  ☐ $label_clean [Y/n]: " response
+        response="${response:-Y}"
+        if [[ "${response,,}" =~ ^y ]]; then
+          append_value "$name" "on"
+        else
+          append_value "$name" "off"
+        fi
+      fi
+
+    elif [[ "$itype" == "password" ]]; then
+      local label
+      label=$(get_label "$html_file" "$name")
+      label=$(clean_label "$label")
+      [[ -z "$label" || "$label" == "$name" ]] && label="${iplaceholder:-Password}"
+      read -e -r -s -p "  🔒 $label: " val
+      echo >&2
+      append_value "$name" "$val"
+
+    elif [[ "$itype" == "radio" ]]; then
+      local label
+      label=$(get_label "$html_file" "$name")
+      label=$(clean_label "$label")
+      [[ -z "$label" || "$label" == "$name" ]] && label="${iplaceholder:-$name}"
+      local default="${ivalue:-}"
+      read -e -r -p "  ◉ $label${default:+ [$default]}: " val
+      val="${val:-$default}"
+      append_value "$name" "$val"
+
+    else
+      local label
+      label=$(get_label "$html_file" "$name")
+      label=$(clean_label "$label")
+      if [[ -z "$label" || "$label" == "$name" ]]; then
+        label="${iplaceholder:-$name}"
+      fi
+      local default="${ivalue:-}"
+      read -e -r -p "  ◇ $label${default:+ [$default]}: " val
+      val="${val:-$default}"
+      append_value "$name" "$val"
+    fi
+  done
+
+  for sline in "${select_data[@]}"; do
+    local sname soptions
+    IFS='|' read -r _ sname soptions <<< "$sline"
+    local label
+    label=$(get_label "$html_file" "$sname")
+    label=$(clean_label "$label")
+    [[ -z "$label" || "$label" == "$sname" ]] && label="$sname"
+
+    echo "  ▼ $label:" >&2
+    local opts=()
+    IFS=' ' read -ra opts <<< "$soptions"
+    local idx=0
+    for opt in "${opts[@]}"; do
+      local opt_val="${opt%%|*}"
+      local opt_text="${opt#*|}"
+      echo "     $idx) $opt_text" >&2
+      ((idx++))
+    done
+    read -e -r -p "     Choice [0]: " choice
+    choice="${choice:-0}"
+    local chosen_val=""
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -lt "${#opts[@]}" ]]; then
+      chosen_val="${opts[$choice]%%|*}"
+    fi
+    append_value "$sname" "$chosen_val"
+  done
+
+  for tline in "${textarea_data[@]}"; do
+    local tname tplaceholder
+    IFS='|' read -r _ tname tplaceholder <<< "$tline"
+    local label
+    label=$(get_label "$html_file" "$tname")
+    label=$(clean_label "$label")
+    [[ -z "$label" || "$label" == "$tname" ]] && label="${tplaceholder:-$tname}"
+    echo "  ¶ $label (Enter . to skip):" >&2
+    local tval=""
+    while IFS= read -e -r line; do
+      [[ "$line" == "." ]] && break
+      tval+="$line"$'\n'
+    done
+    tval=$(echo "$tval" | sed 's/\n$//')
+    append_value "$tname" "$tval"
+  done
+}
+
+# --- URL-encode a value ---
+url_encode() {
+  python3 -c "import urllib.parse; print(urllib.parse.quote('''$1'''))" 2>/dev/null || echo "$1"
+}
+
+# --- Submit form ---
+submit_form() {
+  local action="$1"
+  local method="$2"
+  shift 2
+
+  echo "" >&2
+  echo "📡 Submitting..." >&2
+
+  local data=""
+  for pair in "$@"; do
+    local key="${pair%%=*}"
+    local value="${pair#*=}"
+    value=$(url_encode "$value")
+    data+="$key=$value&"
+  done
+  data="${data%&}"
+
+  debug "Submitting to $action (method: $method)"
+  debug "Data: $data"
+
+  local code
+  if [[ "$method" == "GET" ]]; then
+    local get_url="${action}?${data}"
+    code=$(curl -sS -o "$HTML_FILE" -w "%{http_code}" --max-time "$TIMEOUT" -L "$get_url" 2>/dev/null || echo "000")
+  else
+    code=$(curl -sS -o "$HTML_FILE" -w "%{http_code}" --max-time "$TIMEOUT" -L \
+      -d "$data" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      "$action" 2>/dev/null || echo "000")
+  fi
+
+  echo "  Response: HTTP $code" >&2
+  echo "$code"
+}
+
+# --- Verify internet access ---
+verify_internet() {
+  local code body
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$TIMEOUT" \
+    "http://detectportal.firefox.com/success.txt" 2>/dev/null || echo "000")
+  body=$(curl -sS --max-time "$TIMEOUT" \
+    "http://detectportal.firefox.com/success.txt" 2>/dev/null || echo "")
+
+  if [[ "$code" == "200" ]]; then
+    local norm_body
+    norm_body=$(echo "$body" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    if [[ "$norm_body" == *"success"* ]]; then
+      echo "yes"
+      return 0
+    fi
+  fi
+  echo "no"
+  return 1
+}
+
+# --- Show debug info ---
+show_debug_info() {
+  local portal_url="$1"
+  local form_action="$2"
+  local method="$3"
+  shift 3
+  local fields=("$@")
+
+  echo "" >&2
+  echo "Debug info:" >&2
+  echo "  Portal URL: $portal_url" >&2
+  echo "  Form action: $form_action" >&2
+  echo "  Form method: $method" >&2
+  echo "  Fields sent:" >&2
+  for pair in "${fields[@]}"; do
+    echo "    $pair" >&2
+  done
+  echo "  Saved HTML: $HTML_FILE" >&2
+}
+
+# --- Check dependencies ---
+check_deps() {
+  for cmd in curl python3; do
+    if ! command -v "$cmd" &>/dev/null; then
+      echo "Error: $cmd is required but not installed." >&2
+      return 1
+    fi
+  done
+}
+
+# --- Main ---
+main() {
+  echo "🔍 Checking captive portal..."
+
+  local portal_url
+  portal_url=$(detect_portal)
+
+  if [[ -z "$portal_url" ]]; then
+    echo "✅ No captive portal detected." >&2
+    exit 0
+  fi
+
+  echo "" >&2
+  echo "📡 Portal detected!" >&2
+  $DEBUG && echo "  URL: $portal_url" >&2
+
+  # Fetch portal page
+  echo "" >&2
+  echo "📄 Fetching portal page..." >&2
+  curl -sS -o "$HTML_FILE" -w "%{http_code}" --max-time "$TIMEOUT" -L "$portal_url" 2>/dev/null || true
+
+  # Parse form
+  local form_data
+  form_data=$(parse_form "$HTML_FILE")
+  local form_action form_method page_title
+  form_action=$(echo "$form_data" | grep "^action=" | cut -d= -f2-)
+  form_method=$(echo "$form_data" | grep "^method=" | cut -d= -f2-)
+  page_title=$(echo "$form_data" | grep "^title=" | cut -d= -f2-)
+
+  # Get field lines
+  local fields=()
+  while IFS= read -r line; do
+    [[ "$line" =~ ^(field|select|textarea)\| ]] && fields+=("$line")
+  done <<< "$form_data"
+
+  [[ -z "$form_action" ]] && form_action="$portal_url"
+  [[ -z "$form_method" ]] && form_method="POST"
+  debug "Form action: $form_action"
+  debug "Form method: $form_method"
+  debug "Page title: $page_title"
+
+  if [[ -n "$page_title" ]]; then
+    echo "" >&2
+    echo "  Page: $page_title" >&2
+  fi
+  echo "  Form method: $form_method" >&2
+  echo "  Form action: $form_action" >&2
+
+  if [[ ${#fields[@]} -eq 0 ]]; then
+    echo "" >&2
+    echo "⚠️  No form detected on the portal page." >&2
+    echo "   The portal might use JavaScript." >&2
+    show_debug_info "$portal_url" "$form_action" "$form_method"
+    exit 1
+  fi
+
+  local retries=0
+  while true; do
+    VALUES_ARRAY=()
+    collect_values "$HTML_FILE" "$form_action" "${fields[@]}"
+
+    local result_code
+    result_code=$(submit_form "$form_action" "$form_method" "${VALUES_ARRAY[@]}")
+
+    echo "  Verifying..." >&2
+    local verified
+    verified=$(verify_internet)
+
+    if [[ "$verified" == "yes" ]]; then
+      echo "" >&2
+      echo "✅ Internet access confirmed." >&2
+      rm -f "$HTML_FILE" 2>/dev/null
+      exit 0
+    fi
+
+    ((retries++))
+    if [[ "$retries" -ge "$MAX_RETRIES" ]]; then
+      echo "" >&2
+      echo "⚠️  Failed after $MAX_RETRIES attempts." >&2
+      show_debug_info "$portal_url" "$form_action" "$form_method" "${VALUES_ARRAY[@]}"
+      exit 1
+    fi
+
+    echo "" >&2
+    echo "⚠️  Still behind captive portal (HTTP $result_code)." >&2
+    read -e -r -p "   Retry? [Y/n]: " response
+    response="${response:-Y}"
+    if [[ ! "${response,,}" =~ ^y ]]; then
+      show_debug_info "$portal_url" "$form_action" "$form_method" "${VALUES_ARRAY[@]}"
+      exit 1
+    fi
+  done
+}
+
+# --- Entry ---
+check_deps || exit 1
+main
