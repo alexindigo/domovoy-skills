@@ -10,6 +10,47 @@ A machine-specific dictionary of immutable and quasi-immutable facts. Quick look
 
 Answers "what IS the machine right now" — not "how was it built" (that's SYSTEM_SETUP.md) and not "what did we do" (that's maintenance reports).
 
+## Companion documents
+
+| Document | Purpose | Populated by |
+|----------|---------|-------------|
+| `SYSTEM_INFO.md` | Hardware, OS, storage — what IS the machine | This skill |
+| `SYSTEM_SETUP.md` | Blueprint — how to rebuild from scratch | The `system-documentation` skill |
+| `ENVIRONMENT.md` | Service URLs, network config, Syncthing IDs — what SERVICES are available | Populated alongside SYSTEM_INFO during bootstrap |
+
+All three live in `setup/<hostname>/`. ENVIRONMENT.md holds infrastructure-
+specific settings (SearXNG URL, LAN subnet, Syncthing hub) that skills should
+**reference** rather than hardcode. It is fleet-synced via Syncthing, never
+published to any public repo.
+
+### Populating ENVIRONMENT.md
+
+When onboarding a new machine, create `setup/<hostname>/ENVIRONMENT.md` with:
+
+```markdown
+# Environment — <hostname>
+
+## Network
+| Setting | Value |
+|---------|-------|
+| LAN subnet | `10.4.0.0/16` |
+| DNS suffix | `.home` |
+
+## Services
+| Service | URL |
+|---------|-----|
+| SearXNG | `http://search.home/` |
+
+## Syncthing
+| Setting | Value |
+|---------|-------|
+| Hub device ID | `<device-id>` |
+| Hub device name | `<name>` |
+```
+
+The `search` skill and `syncthing-setup` skill reference this file for their
+infrastructure URLs rather than hardcoding them.
+
 ## When to populate (new machine bootstrap)
 
 When onboarding a new machine, populate SYSTEM_INFO.md immediately from live system data. Gather:

@@ -2,9 +2,9 @@
 
 # System Documentation
 
-Maintain three documents per machine, each serving a distinct role. Know what goes where.
+Maintain four documents per machine, each serving a distinct role. Know what goes where.
 
-## Three-document system
+## Four-document system
 
 ### 1. SYSTEM_INFO.md — the snapshot
 
@@ -59,6 +59,28 @@ See `maintenance-report` skill for format and rules.
 
 **Update when:** IMMEDIATELY after every state-changing command, subtask, or logical step. Never batch. Log failures too.
 
+### 4. ENVIRONMENT.md — the service config
+
+Location: `setup/<hostname>/ENVIRONMENT.md`
+
+**Purpose:** Machine-specific infrastructure settings — service URLs, network
+config, Syncthing hub — that skills should **reference** rather than hardcode.
+Read by the `system-info` skill at session start; populated during bootstrap.
+
+**Content:**
+- Network: LAN subnet, DNS suffix
+- Services: SearXNG URL, any household-specific service endpoints
+- Syncthing: hub device ID and name
+
+**Style:** Key-value in Markdown tables. One table per category.
+
+**Not in ENVIRONMENT:** Hardware specs (SYSTEM_INFO), rebuild instructions
+(SYSTEM_SETUP), command logs (reports). No secrets (those go in env vars or
+auth files).
+
+**Never published to public repos.** ENVIRONMENT.md is fleet-synced via
+Syncthing only.
+
 ## Document boundaries
 
 | Question | Goes in |
@@ -70,6 +92,9 @@ See `maintenance-report` skill for format and rules.
 | When was snapper installed? | reports/YYYY-MM-DD.md |
 | What's the current kernel version? | SYSTEM_INFO.md |
 | How do I blacklist iTCO_wdt? | SYSTEM_SETUP.md |
+| Where is the SearXNG instance? | ENVIRONMENT.md |
+| What's this household's LAN subnet? | ENVIRONMENT.md |
+| What's the Syncthing hub device ID? | ENVIRONMENT.md |
 | Did vt.global_cursor_default=0 work? | reports/ (no, doesn't belong in setup) |
 
 ## When to update which
