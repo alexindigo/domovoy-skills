@@ -85,6 +85,45 @@ location (or point it outside the shared folder).
 5. Leave File Versioning **OFF** (leaf default).
 6. Verify both folders reach "Up to Date".
 
+### Headless leaf pairing (no GUI)
+
+If the GUI is disabled (BOOTSTRAP fleet standard), pairing must be done via
+direct config.xml edits. The principle: pre‑declare the folders and device
+IDs in config.xml, restart, and Syncthing auto-accepts — no click needed.
+
+1. Add the hub's device ID to `/home/domovoy/.config/syncthing/config.xml`:
+   ```xml
+   <device id="<hub-device-id>" name="hub" compression="metadata" introducer="false" ...>
+       <address>dynamic</address>
+       <paused>false</paused>
+       <autoAcceptFolders>false</autoAcceptFolders>
+   </device>
+   ```
+2. Add device bindings inside each pre-declared folder — list both the local
+   device and the hub:
+   ```xml
+   <folder id="domovoy-agents" ... ignorePerms="true" ...>
+       ...
+       <device id="<local-device-id>" introducedBy=""></device>
+       <device id="<hub-device-id>" introducedBy=""></device>
+   </folder>
+   ```
+   > `ignorePerms="true"` is critical: UID/GID differ across machines.
+   > Without it, Syncthing fails on ownership mismatch for synced files.
+3. Restart syncthing:
+   ```sh
+   systemctl --user restart syncthing.service
+   ```
+4. Check logs for connection and sync status:
+   ```sh
+   journalctl --user -u syncthing.service --no-pager -n 30
+   ```
+5. Verify both folders reach "Up to Date".
+
+The hub must also have the leaf's device ID added on its side (or share the
+folders to the leaf's device ID). Once both sides have each other's IDs,
+syncing proceeds automatically through relays or direct LAN connection.
+
 ---
 
 ## Set up the CENTRAL HUB (NAS / home server)

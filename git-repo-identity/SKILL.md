@@ -190,5 +190,12 @@ git config --local --list | grep -E 'user\.|gpg\.|commit\.gpg'  # confirm local-
 - **`visudo`-stye permission errors:** if `.git/allowed_signers` is unreadable by
   the committing user, `--show-signature` just says "No signature" with no
   explanation — check perms.
+- **LLM trap: never type a key by hand.** SSH public keys are base64 blobs.
+  LLMs systematically hallucinate key text when typing from memory. Always
+  read from disk — `cat ~/.ssh/<key>.pub` — in the same tool call as the
+  message that displays it. Never copy-paste a key from your own previous
+  output; re-reading from disk is idempotent and safe. If you need to verify
+  the key matches what was previously shown, compare fingerprints with
+  `ssh-keygen -lf`, not the base64 text.
 
 Base directory: file:///home/domovoy/.agents/skills/git-repo-identity
