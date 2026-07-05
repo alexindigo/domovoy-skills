@@ -1,0 +1,8 @@
+[Unit]
+Description=Trigger last-seen-network on network-policy state change
+
+[Path]
+PathChanged=/run/network-policy/current
+
+[Install]
+WantedBy=default.target

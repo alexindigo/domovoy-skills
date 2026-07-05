@@ -1,0 +1,15 @@
+#!/bin/bash
+# NM dispatcher: trigger last-seen-network on network events.
+# Detects the last-seen-network user service and starts it.
+
+DOMOVOY_UID=588
+
+# Only react to events that actually change network state
+case "$2" in
+    up|dhcp4-change|dhcp6-change|connectivity-change) ;;
+    *) exit 0 ;;
+esac
+
+# Trigger domovoy's last-seen-network user service
+sudo -u domovoy XDG_RUNTIME_DIR=/run/user/${DOMOVOY_UID} \
+    systemctl --user start last-seen-network.service 2>/dev/null || true

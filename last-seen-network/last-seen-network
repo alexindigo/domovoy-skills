@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# last-seen-network — publish current network state to a fleet-synced file.
+# Invoked by: last-seen-network.timer, last-seen-network.path, or NM dispatcher.
+set -euo pipefail
+
+HOSTNAME="$(hostname)"
+DEST="/home/domovoy/setup/${HOSTNAME}/LAST_SEEN_NETWORK"
+TMP="${DEST}.tmp"
+STATE_FILE="/run/network-policy/current"
+
+# ────────────────────────────────────────────────────────────────
+# 1. Determine primary interface and LAN details
+# ────────────────────────────────────────────────────────────────
+
+# Find the default-route interface
+IFACE="$(ip route show default 2>/dev/null | awk '/^default/{print $5; exit}')"
+
+if [ -z "$IFACE" ]; then
+    # No route = no network to report. Skip write entirely.
+    exit 0
+fi
+
+# LAN IPv4 in CIDR notation (e.g. 10.4.5.123/24)
+LAN="$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | head -1)"
+
+# Default gateway
+GATEWAY="$(ip route show default 2>/dev/null | awk '/^default via /{print $3; exit}')"
+
+# ────────────────────────────────────────────────────────────────
+# 2. Determine SSID (AirTag use case — report wifi even when
+#    ethernet is primary; helps identify physical location)
+# ────────────────────────────────────────────────────────────────
+
+SSID=""
+for wiface in $(ls /sys/class/net/ 2>/dev/null | grep '^wl'); do
+    # iwgetid returns empty string if not associated
+    candidate="$(iwgetid -r "$wiface" 2>/dev/null || true)"
+    if [ -n "$candidate" ]; then
+        SSID="$candidate"
+        break
+    fi
+done
+
+# ────────────────────────────────────────────────────────────────
+# 3. Read network/zone from shared state file
+#    (written by network-policy dispatcher on every up event)
+# ────────────────────────────────────────────────────────────────
+
+NETWORK="*"
+ZONE="*"
+if [ -r "$STATE_FILE" ]; then
+    NETWORK="$(grep -oP '^network=\K.*' "$STATE_FILE" 2>/dev/null || echo '*')"
+    ZONE="$(grep -oP '^zone=\K.*' "$STATE_FILE" 2>/dev/null || echo '*')"
+fi
+
+# ────────────────────────────────────────────────────────────────
+# 4. Query public IP with fallback chain (5s timeout each)
+# ────────────────────────────────────────────────────────────────
+
+# Default all fields to empty
+IP=""; COUNTRY=""; COUNTRY_CODE=""; CITY=""; LONGITUDE=""; LATITUDE=""
+MULLVAD_EXIT_IP=""; MULLVAD_EXIT_IP_HOSTNAME=""
+MULLVAD_SERVER_TYPE=""; MULLVAD_SERVER_PROVIDER=""
+BLACKLISTED=""; ORGANIZATION=""
+IP_SOURCE="none"
+
+curl_one() {
+    # $1 = URL, $2 = optional header
+    curl -sS -m 5 ${2:+-H "$2"} "$1" 2>/dev/null || return 1
+}
+
+# --- Mullvad (primary, full JSON) ---
+RAW="$(curl_one "https://am.i.mullvad.net/json" "Accept: application/json")"
+if [ $? -eq 0 ] && [ -n "$RAW" ]; then
+    # Parse with python3 for reliable JSON handling
+    python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d.get('ip', ''))
+    print(d.get('country', ''))
+    print(d.get('country_code', ''))
+    print(d.get('city', ''))
+    print(d.get('longitude', ''))
+    print(d.get('latitude', ''))
+    print(d.get('mullvad_exit_ip', ''))
+    print(d.get('mullvad_exit_ip_hostname', ''))
+    print(d.get('mullvad_server_type', ''))
+    print(d.get('mullvad_server_provider', ''))
+    print(d.get('blacklisted', ''))
+    print(d.get('organization', ''))
+except:
+    sys.exit(1)
+" <<< "$RAW" 2>/dev/null | {
+        read -r IP
+        read -r COUNTRY
+        read -r COUNTRY_CODE
+        read -r CITY
+        read -r LONGITUDE
+        read -r LATITUDE
+        read -r MULLVAD_EXIT_IP
+        read -r MULLVAD_EXIT_IP_HOSTNAME
+        read -r MULLVAD_SERVER_TYPE
+        read -r MULLVAD_SERVER_PROVIDER
+        read -r BLACKLISTED
+        read -r ORGANIZATION
+    }
+    [ -n "$IP" ] && IP_SOURCE="mullvad"
+fi
+
+# --- ifconfig.co (fallback 1, JSON subset) ---
+if [ "$IP_SOURCE" = "none" ]; then
+    RAW="$(curl_one "https://ifconfig.co/json" "Accept: application/json")"
+    if [ $? -eq 0 ] && [ -n "$RAW" ]; then
+        IP="$(echo "$RAW" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ip',''))" 2>/dev/null || true)"
+        COUNTRY="$(echo "$RAW" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('country',''))" 2>/dev/null || true)"
+        COUNTRY_CODE="$(echo "$RAW" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('country_iso',''))" 2>/dev/null || true)"
+        CITY="$(echo "$RAW" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('city',''))" 2>/dev/null || true)"
+        LONGITUDE="$(echo "$RAW" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('longitude',''))" 2>/dev/null || true)"
+        LATITUDE="$(echo "$RAW" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('latitude',''))" 2>/dev/null || true)"
+        ORGANIZATION="$(echo "$RAW" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('asn_org',''))" 2>/dev/null || true)"
+        [ -n "$IP" ] && IP_SOURCE="ifconfig.co"
+    fi
+fi
+
+# --- icanhazip (fallback 2, bare IP) ---
+if [ "$IP_SOURCE" = "none" ]; then
+    IP="$(curl_one "https://icanhazip.com/")"
+    [ -n "$IP" ] && { IP="$(echo "$IP" | tr -d '[:space:]')"; IP_SOURCE="icanhazip"; }
+fi
+
+# --- ipify (fallback 3, JSON) ---
+if [ "$IP_SOURCE" = "none" ]; then
+    RAW="$(curl_one "https://api.ipify.org?format=json" "Accept: application/json")"
+    if [ $? -eq 0 ] && [ -n "$RAW" ]; then
+        IP="$(echo "$RAW" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ip',''))" 2>/dev/null || true)"
+        [ -n "$IP" ] && IP_SOURCE="ipify"
+    fi
+fi
+
+# ────────────────────────────────────────────────────────────────
+# 5. Compose and atomically write the file
+# ────────────────────────────────────────────────────────────────
+
+UPDATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+{
+    cat <<'HEAD'
+# Auto-generated by last-seen-network.timer + NM dispatcher (85-last-seen-network)
+# Never edit by hand.
+#
+# Fields:
+#   lan        LAN IPv4 in CIDR (e.g. 10.4.5.123/24), empty if no route
+#   gateway    Default gateway IPv4, empty if no route
+#   iface      Primary route interface. Naming reveals medium: en*/eth* = ethernet, wl* = wifi
+#   ssid       SSID of any currently-associated wifi AP (even when ethernet is primary),
+#              empty if no wifi association
+#   network    Matched network-policy network name, or '*'
+#   zone       Matched network-policy zone name, or '*'
+#   ip_source  Which public-IP endpoint answered:
+#              mullvad | ifconfig.co | icanhazip | ipify | none
+#   ip, country, country_code, city, longitude, latitude,
+#   mullvad_exit_ip, mullvad_exit_ip_hostname, mullvad_server_type,
+#   mullvad_server_provider, blacklisted, organization
+#              Fields returned by public-IP endpoints; populated to whatever depth
+#              the responding endpoint provides. Empty if not available.
+#   updated    ISO 8601 UTC timestamp of this write
+HEAD
+    echo "lan=${LAN:-}"
+    echo "gateway=${GATEWAY:-}"
+    echo "iface=${IFACE:-}"
+    echo "ssid=${SSID:-}"
+    echo "network=${NETWORK:-*}"
+    echo "zone=${ZONE:-*}"
+    echo "ip_source=${IP_SOURCE:-}"
+    echo "ip=${IP:-}"
+    echo "country=${COUNTRY:-}"
+    echo "country_code=${COUNTRY_CODE:-}"
+    echo "city=${CITY:-}"
+    echo "longitude=${LONGITUDE:-}"
+    echo "latitude=${LATITUDE:-}"
+    echo "mullvad_exit_ip=${MULLVAD_EXIT_IP:-}"
+    echo "mullvad_exit_ip_hostname=${MULLVAD_EXIT_IP_HOSTNAME:-}"
+    echo "mullvad_server_type=${MULLVAD_SERVER_TYPE:-}"
+    echo "mullvad_server_provider=${MULLVAD_SERVER_PROVIDER:-}"
+    echo "blacklisted=${BLACKLISTED:-}"
+    echo "organization=${ORGANIZATION:-}"
+    echo "updated=${UPDATED:-}"
+} > "$TMP"
+
+mv "$TMP" "$DEST"

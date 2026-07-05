@@ -1,0 +1,7 @@
+[Unit]
+Description=Publish current network state to fleet LAST_SEEN_NETWORK
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/last-seen-network
