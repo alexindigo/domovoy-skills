@@ -61,6 +61,15 @@ the reject — the existing LAN rules (8384, 8080, 4096) follow this pattern.
 
 ## 5. Persist to nftables.conf
 
+Always back up before editing:
+
+```bash
+sudo cp /etc/nftables.conf /etc/nftables.conf.bak
+```
+
+Insert the rule before the reject catch-all (adds the same rule to the
+persistent config):
+
 ```bash
 sudo sed -i "/^    pkttype host.*reject with icmpx/i\    ip saddr <subnet> tcp dport <port> accept comment \"allow <service> from LAN\"" /etc/nftables.conf
 ```
@@ -69,6 +78,13 @@ Verify:
 ```bash
 grep "<port>" /etc/nftables.conf
 ```
+
+> **Safety-critical environments:** If this machine runs a killswitch
+> (default-drop output chain) or if dropping connectivity has severe
+> consequences, use the `network-changes` skill instead. It creates a change
+> script + rollback script pair in `/tmp/` that the operator runs manually
+> from a console — the Domovoy never modifies live network configuration
+> inside its own session.
 
 ## 6. Verify
 
