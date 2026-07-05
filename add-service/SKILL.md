@@ -61,10 +61,13 @@ the reject — the existing LAN rules (8384, 8080, 4096) follow this pattern.
 
 ## 5. Persist to nftables.conf
 
-Always back up before editing:
+Always back up before editing. Use the numbered-backup convention
+(`.bak`, `.1.bak`, `.2.bak` — never overwrites):
 
 ```bash
-sudo cp /etc/nftables.conf /etc/nftables.conf.bak
+BAK=/etc/nftables.conf.bak
+if [ -e "$BAK" ]; then N=1; while [ -e "/etc/nftables.conf.${N}.bak" ]; do ((N++)); done; BAK="/etc/nftables.conf.${N}.bak"; fi
+sudo cp /etc/nftables.conf "$BAK"
 ```
 
 Insert the rule before the reject catch-all (adds the same rule to the
